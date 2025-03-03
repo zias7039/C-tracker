@@ -1,16 +1,18 @@
 # settings_dialog.py
+import logging
 from PyQt5.QtWidgets import (
     QDialog, QGroupBox, QFormLayout, QLineEdit, QSlider, QFontComboBox,
     QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QWidget, QSpinBox, QCheckBox,
     QColorDialog, QComboBox, QTabWidget, QGridLayout, QScrollArea, QFrame,
-    QListWidget, QSizePolicy
+    QListWidget, QSizePolicy, QMessageBox
 )
-from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QSize
+from PyQt5.QtCore import Qt, pyqtSignal, pyqtSlot, QSize, QTimer
 from PyQt5.QtGui import QFont, QColor, QIcon
 
 
 class ColorButton(QPushButton):
     """색상 선택 버튼 클래스"""
+    colorChanged = pyqtSignal(str)
 
     def __init__(self, color="#FFFFFF", parent=None):
         super().__init__(parent)
@@ -38,18 +40,54 @@ class ColorButton(QPushButton):
             self.setColor(color.name())
             self.colorChanged.emit(color.name())
 
-    colorChanged = pyqtSignal(str)
-
 
 class SettingsDialog(QDialog):
+    # 설정이 적용되었을 때 발생하는 시그널
+    settings_applied = pyqtSignal(dict)
+
     def __init__(self, overlay):
-        # 부모-자식 관계를 끊기 위해 None으로 설정
+        # 독립적인 대화상자로 생성 (부모 없음)
         super().__init__(None)
+
+        # 메서드 별칭 설정 (호환성을 위해)
+        self.apply_settings = self.apply_settings_method
+
+        # 창 설정
+        self.setWindowFlags(Qt.Dialog)
+        self.setAttribute(Qt.WA_DeleteOnClose, False)
+
+        # 오버레이 객체 참조 (부모-자식 관계 없음)
         self.overlay = overlay
+
+        # 임시 설정 저장용 딕셔너리
+        self.temp_settings = self.overlay.config.get_all().copy()
+
+        # 업데이트 제한을 위한 타이머
+        self.update_timer = QTimer(self)
+        self.update_timer.setSingleShot(True)
+        self.update_timer.timeout.connect(self.process_delayed_updates)
+        self.pending_updates = {}
+
+        # UI 초기화
         self.initUI()
 
         # UI 요소 이벤트 연결
         self.connect_ui_events()
+
+    def apply_settings_method(self):
+        """현재 설정 적용 (창은 닫지 않음)"""
+        try:
+            # 현재 설정 가져오기
+            settings = self.get_current_settings()
+
+            # 설정 적용 시그널 발생
+            self.settings_applied.emit(settings)
+
+            # 성공 메시지
+            QMessageBox.information(self, "알림", "설정이 적용되었습니다.")
+        except Exception as e:
+            logging.error(f"설정 적용 중 오류: {e}")
+            QMessageBox.critical(self, "오류", f"설정을 적용하는 중 오류가 발생했습니다: {e}")
 
     def initUI(self):
         """UI 초기화"""
@@ -149,24 +187,9 @@ class SettingsDialog(QDialog):
         font_group.setLayout(font_layout)
         design_layout.addWidget(font_group)
 
-        # 표시 모드 설정
-        display_group = QGroupBox("표시 모드")
-        display_layout = QVBoxLayout()
-
-        self.mode_combo = QComboBox()
-        self.mode_combo.addItem("간편 모드 - 기본 정보만 표시", "compact")
-        self.mode_combo.addItem("표준 모드 - 일반 표시", "standard")
-        self.mode_combo.addItem("상세 모드 - 자세한 정보 표시", "detailed")
-        self.mode_combo.addItem("카드 모드 - 개별 카드 표시", "cards")
-
-        # 현재 선택된 모드 설정
-        for i in range(self.mode_combo.count()):
-            if self.mode_combo.itemData(i) == self.overlay.display_mode.value:
-                self.mode_combo.setCurrentIndex(i)
-                break
-
-        display_layout.addWidget(QLabel("표시 모드:"))
-        display_layout.addWidget(self.mode_combo)
+        # 시각 효과 설정 그룹
+        effects_group = QGroupBox("시각 효과")
+        effects_layout = QVBoxLayout()
 
         # 시각 효과 체크박스
         self.animation_check = QCheckBox("애니메이션 효과 사용")
@@ -178,12 +201,12 @@ class SettingsDialog(QDialog):
         self.blur_check = QCheckBox("블러 효과 사용 (일부 시스템 한정)")
         self.blur_check.setChecked(self.overlay.use_blur_effect)
 
-        display_layout.addWidget(self.animation_check)
-        display_layout.addWidget(self.gradient_check)
-        display_layout.addWidget(self.blur_check)
+        effects_layout.addWidget(self.animation_check)
+        effects_layout.addWidget(self.gradient_check)
+        effects_layout.addWidget(self.blur_check)
 
-        display_group.setLayout(display_layout)
-        design_layout.addWidget(display_group)
+        effects_group.setLayout(effects_layout)
+        design_layout.addWidget(effects_group)
 
         # 색상 설정 그룹
         color_group = QGroupBox("색상 설정")
@@ -234,7 +257,6 @@ class SettingsDialog(QDialog):
                 <li><b>F5</b>: 가격 정보 새로고침</li>
                 <li><b>Esc</b>: 트레이로 최소화</li>
                 <li><b>Ctrl+Q</b>: 프로그램 종료</li>
-                <li><b>Ctrl+M</b>: 표시 모드 변경</li>
                 <li>마우스 휠: 투명도 조절</li>
                 <li>좌클릭 드래그: 창 이동</li>
                 <li>우클릭: 설정 창 열기</li>
@@ -262,6 +284,7 @@ class SettingsDialog(QDialog):
         button_layout.setContentsMargins(0, 10, 0, 0)
 
         self.reset_button = QPushButton("기본값으로 복원")
+        self.apply_button = QPushButton("적용")
         self.save_button = QPushButton("저장")
         self.cancel_button = QPushButton("취소")
 
@@ -269,6 +292,7 @@ class SettingsDialog(QDialog):
 
         button_layout.addWidget(self.reset_button)
         button_layout.addStretch(1)
+        button_layout.addWidget(self.apply_button)
         button_layout.addWidget(self.cancel_button)
         button_layout.addWidget(self.save_button)
 
@@ -375,112 +399,138 @@ class SettingsDialog(QDialog):
 
     def connect_ui_events(self):
         """UI 이벤트 연결"""
-        # 일반 설정 이벤트
-        self.symbol_input.textChanged.connect(self.update_overlay_preview)
-        self.interval_spin.valueChanged.connect(self.update_overlay_preview)
-
-        # 위치 및 크기 설정 이벤트
-        self.width_slider.valueChanged.connect(self.update_width_label)
-        self.width_slider.valueChanged.connect(self.update_overlay_preview)
-
-        self.height_slider.valueChanged.connect(self.update_height_label)
-        self.height_slider.valueChanged.connect(self.update_overlay_preview)
-
-        self.opacity_slider.valueChanged.connect(self.update_opacity_label)
-        self.opacity_slider.valueChanged.connect(self.update_overlay_preview)
-
-        # 디자인 설정 이벤트
-        self.font_combo.currentFontChanged.connect(self.update_overlay_preview)
-
-        self.font_slider.valueChanged.connect(self.update_font_size_label)
-        self.font_slider.valueChanged.connect(self.update_overlay_preview)
-
-        self.mode_combo.currentIndexChanged.connect(self.update_overlay_preview)
-
-        self.animation_check.stateChanged.connect(self.update_overlay_preview)
-        self.gradient_check.stateChanged.connect(self.update_overlay_preview)
-        self.blur_check.stateChanged.connect(self.update_overlay_preview)
-
-        # 색상 버튼 이벤트
-        self.text_color_btn.colorChanged.connect(lambda color: self.update_color("text", color))
-        self.bg_color_btn.colorChanged.connect(lambda color: self.update_color("background", color))
-        self.positive_color_btn.colorChanged.connect(lambda color: self.update_color("positive", color))
-        self.negative_color_btn.colorChanged.connect(lambda color: self.update_color("negative", color))
-        self.neutral_color_btn.colorChanged.connect(lambda color: self.update_color("neutral", color))
-
         # 버튼 이벤트
         self.reset_button.clicked.connect(self.reset_to_defaults)
+        self.apply_button.clicked.connect(self.apply_settings_method)
         self.save_button.clicked.connect(self.save_and_close)
-        self.cancel_button.clicked.connect(self.reject)
+        self.cancel_button.clicked.connect(self.close)
+
+        # 슬라이더 이벤트 - 실시간 적용 추가 (쓰로틀링 적용)
+        self.width_slider.valueChanged.connect(self.update_width_label)
+        self.width_slider.valueChanged.connect(
+            lambda value: self.schedule_setting_update("window_width", value))
+
+        self.height_slider.valueChanged.connect(self.update_height_label)
+        self.height_slider.valueChanged.connect(
+            lambda value: self.schedule_setting_update("window_height", value))
+
+        self.opacity_slider.valueChanged.connect(self.update_opacity_label)
+        self.opacity_slider.valueChanged.connect(
+            lambda value: self.schedule_setting_update("opacity", value / 100.0))
+
+        self.font_slider.valueChanged.connect(self.update_font_size_label)
+        self.font_slider.valueChanged.connect(
+            lambda value: self.schedule_setting_update("font_size", value))
+
+        # 콤보박스 이벤트 - 실시간 적용
+        self.font_combo.currentFontChanged.connect(
+            lambda font: self.schedule_setting_update("font_name", font.family()))
+
+        # 체크박스 이벤트 - 실시간 적용
+        self.animation_check.stateChanged.connect(
+            lambda state: self.schedule_setting_update("use_animations", bool(state)))
+        self.gradient_check.stateChanged.connect(
+            lambda state: self.schedule_setting_update("use_gradient_bg", bool(state)))
+        self.blur_check.stateChanged.connect(
+            lambda state: self.schedule_setting_update("use_blur_effect", bool(state)))
+
+        # 색상 버튼 이벤트
+        self.text_color_btn.colorChanged.connect(
+            lambda color: self.schedule_setting_update("text_color", color))
+        self.bg_color_btn.colorChanged.connect(
+            lambda color: self.schedule_setting_update("background_color", color))
+        self.positive_color_btn.colorChanged.connect(
+            lambda color: self.schedule_setting_update("positive_color", color))
+        self.negative_color_btn.colorChanged.connect(
+            lambda color: self.schedule_setting_update("negative_color", color))
+        self.neutral_color_btn.colorChanged.connect(
+            lambda color: self.schedule_setting_update("neutral_color", color))
+
+        # 티커 설정은 즉시 적용하지 않음 (엔터 키 입력 필요)
+        self.symbol_input.returnPressed.connect(self.update_symbols)
+        self.interval_spin.valueChanged.connect(
+            lambda value: self.schedule_setting_update("refresh_interval", value))
+
+    def update_symbols(self):
+        """심볼 목록 업데이트 및 즉시 적용"""
+        symbols = [s.strip().upper() for s in self.symbol_input.text().split(",") if s.strip()]
+        self.schedule_setting_update("symbols", symbols)
 
     def update_width_label(self, value):
+        """너비 슬라이더 값 업데이트"""
         self.width_value_label.setText(f"{value}px")
+        self.temp_settings["window_width"] = value
 
     def update_height_label(self, value):
+        """높이 슬라이더 값 업데이트"""
         self.height_value_label.setText(f"{value}px")
+        self.temp_settings["window_height"] = value
 
     def update_opacity_label(self, value):
+        """투명도 슬라이더 값 업데이트"""
         self.opacity_value_label.setText(f"{value}%")
+        self.temp_settings["opacity"] = value / 100.0
 
     def update_font_size_label(self, value):
+        """글꼴 크기 슬라이더 값 업데이트"""
         self.font_size_label.setText(f"{value}pt")
+        self.temp_settings["font_size"] = value
 
-    def update_color(self, color_type, color):
-        """색상 변경 처리"""
-        if color_type == "text":
-            self.overlay.text_color = color
-        elif color_type == "background":
-            self.overlay.background_color = color
-        elif color_type == "positive":
-            self.overlay.positive_color = color
-        elif color_type == "negative":
-            self.overlay.negative_color = color
-        elif color_type == "neutral":
-            self.overlay.neutral_color = color
+    def update_temp_settings(self, key, value):
+        """임시 설정 업데이트"""
+        self.temp_settings[key] = value
 
-        self.update_overlay_preview()
+    def schedule_setting_update(self, key, value):
+        """설정 업데이트 예약 (쓰로틀링 적용)"""
+        # 임시 설정 저장
+        self.update_temp_settings(key, value)
 
-    def update_overlay_preview(self):
-        """UI 변경 시 오버레이 미리보기 업데이트"""
+        # 쓰로틀링을 위해 보류 중인 업데이트에 추가
+        self.pending_updates[key] = value
+
+        # 타이머가 이미 실행 중이 아니라면 시작
+        if not self.update_timer.isActive():
+            self.update_timer.start(300)  # 300ms 지연
+
+    def process_delayed_updates(self):
+        """지연된 설정 업데이트 처리"""
+        if not self.pending_updates:
+            return
+
         try:
-            # 티커 입력 처리
-            syms = self.symbol_input.text()
-            self.overlay.symbols = [s.strip().upper() for s in syms.split(",") if s.strip()]
+            # 적용할 설정들을 하나의 딕셔너리로
+            settings = self.pending_updates.copy()
 
-            # 폰트 및 크기 설정
-            self.overlay.font_name = self.font_combo.currentFont().family()
-            self.overlay.font_size = self.font_slider.value()
+            # 설정 적용 시그널 발생
+            self.settings_applied.emit(settings)
 
-            # 창 크기 설정
-            self.overlay.window_width = self.width_slider.value()
-            self.overlay.window_height = self.height_slider.value()
-
-            # 투명도 설정
-            self.overlay.opacity_level = self.opacity_slider.value() / 100.0
-
-            # 새로고침 간격 설정
-            self.overlay.refresh_interval = self.interval_spin.value()
-
-            # 표시 모드 설정
-            mode_value = self.mode_combo.currentData()
-            for mode in self.overlay.DisplayMode:
-                if mode.value == mode_value:
-                    self.overlay.display_mode = mode
-                    break
-
-            # 시각 효과 설정
-            self.overlay.use_animations = self.animation_check.isChecked()
-            self.overlay.use_gradient_bg = self.gradient_check.isChecked()
-            self.overlay.use_blur_effect = self.blur_check.isChecked()
-
-            # 설정 즉시 적용
-            self.overlay.apply_settings()
-
-            # 변경된 심볼이 있으면 가격 업데이트
-            self.overlay.update_price()
-
+            # 처리 완료된 업데이트 초기화
+            self.pending_updates.clear()
         except Exception as e:
-            logging.error(f"설정 미리보기 업데이트 중 오류: {e}")
+            logging.error(f"설정 일괄 적용 중 오류: {e}")
+
+    def get_current_settings(self):
+        """현재 설정 값 가져오기"""
+        # 심볼 목록
+        symbols = [s.strip().upper() for s in self.symbol_input.text().split(",") if s.strip()]
+
+        # 임시 설정에 추가
+        settings = self.temp_settings.copy()
+        settings.update({
+            "symbols": symbols,
+            "font_name": self.font_combo.currentFont().family(),
+            "opacity": self.opacity_slider.value() / 100.0,
+            "font_size": self.font_slider.value(),
+            "window_width": self.width_slider.value(),
+            "window_height": self.height_slider.value(),
+            "refresh_interval": self.interval_spin.value(),
+            "use_animations": self.animation_check.isChecked(),
+            "use_gradient_bg": self.gradient_check.isChecked(),
+            "use_blur_effect": self.blur_check.isChecked(),
+            # 색상 값은 이미 이벤트로 업데이트됨
+        })
+
+        return settings
 
     def reset_to_defaults(self):
         """기본 설정으로 복원"""
@@ -495,11 +545,6 @@ class SettingsDialog(QDialog):
         self.font_combo.setCurrentFont(QFont("Segoe UI"))
         self.font_slider.setValue(12)
 
-        for i in range(self.mode_combo.count()):
-            if self.mode_combo.itemData(i) == "standard":
-                self.mode_combo.setCurrentIndex(i)
-                break
-
         self.animation_check.setChecked(True)
         self.gradient_check.setChecked(True)
         self.blur_check.setChecked(False)
@@ -510,31 +555,31 @@ class SettingsDialog(QDialog):
         self.negative_color_btn.setColor("#F44336")
         self.neutral_color_btn.setColor("#FFA500")
 
-        # 미리보기 업데이트
-        self.update_overlay_preview()
+        # 임시 설정 초기화
+        self.temp_settings = {
+            "text_color": "#FFFFFF",
+            "background_color": "rgba(40,40,40,200)",
+            "positive_color": "#4CAF50",
+            "negative_color": "#F44336",
+            "neutral_color": "#FFA500"
+        }
 
     def save_and_close(self):
         """설정 저장 및 대화상자 닫기"""
-        # 현재 설정 적용
-        self.update_overlay_preview()
+        try:
+            # 현재 설정 가져오기
+            settings = self.get_current_settings()
 
-        # 설정 저장
-        self.overlay.save_settings()
+            # 설정 적용 시그널 발생
+            self.settings_applied.emit(settings)
 
-        # 대화상자만 닫기 (accept 대신 hide 사용)
-        self.hide()
-
-    def accept(self):
-        """확인 버튼 기본 동작 재정의"""
-        self.save_and_close()
-        # 주의: super().accept()를 호출하지 않음
-
-    def reject(self):
-        """취소 버튼 기본 동작 재정의"""
-        self.hide()
-        # 주의: super().reject()를 호출하지 않음
+            # 대화상자 닫기
+            self.accept()
+        except Exception as e:
+            logging.error(f"설정 저장 중 오류: {e}")
+            QMessageBox.critical(self, "오류", f"설정을 저장하는 중 오류가 발생했습니다: {e}")
 
     def closeEvent(self, event):
         """창 닫기 이벤트 처리"""
-        self.hide()
-        event.ignore()  # 부모 창에 이벤트가 전파되지 않도록 방지
+        # 설정 창 닫기 허용
+        event.accept()
