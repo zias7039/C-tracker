@@ -4,7 +4,6 @@ import json
 import logging
 from typing import Dict, Any, List, Optional
 
-
 class ConfigManager:
     """
     설정 관리를 위한 클래스.
@@ -36,7 +35,16 @@ class ConfigManager:
             "theme": "dark",
             "language": "ko",
             "enable_alerts": False,
-            "price_alerts": {}
+            "price_alerts": {},
+            "display_mode": "standard",
+            "use_animations": True,
+            "use_gradient_bg": True,
+            "use_blur_effect": False,
+            "text_color": "#FFFFFF",
+            "background_color": "rgba(40,40,40,200)",
+            "positive_color": "#4CAF50",
+            "negative_color": "#F44336",
+            "neutral_color": "#FFA500"
         }
         self._config = {}
         self.load()
@@ -126,12 +134,10 @@ class ConfigManager:
         self._config = self._default_config.copy()
         self.save()
 
-# 사용 예시:
-# from config_manager import ConfigManager
-#
-# config = ConfigManager()
-# symbols = config.get("symbols")
-#
-# # 설정 변경
-# config.set("refresh_interval", 5)
-# config.save()
+    def connect_ui_events(self):
+        """UI 이벤트 연결"""
+        # 버튼 이벤트
+        self.reset_button.clicked.connect(self.reset_to_defaults)
+        self.apply_button.clicked.connect(self.apply_settings_method)  # Use the method directly
+        self.save_button.clicked.connect(self.save_and_close)
+        self.cancel_button.clicked.connect(self.close)
